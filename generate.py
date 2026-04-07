@@ -88,17 +88,19 @@ REWRITE_PROMPT = """You are the writer for "Dark Side of Days," a dark history s
 I will give you a list of verified historical events that happened on {date}.
 Your job: pick exactly 4 and rewrite them in the channel's voice.
 
-SELECTION RULES:
-- Pick events with the darkest, most unsettling, or most surprising true angle
-- Prefer variety: different eras, different types of events
-- Fact 4 must be the most obscure event on the list — prefix its title with "DECLASSIFIED:"
-- Do NOT invent any facts. Only use what is provided below.
-- Do NOT change dates, names, or numbers from the source material.
+SELECTION RULES — pick one fact per category:
+- SLOT 1 — DARK: The most disturbing or sinister event. Deaths, crimes, atrocities, failures.
+- SLOT 2 — STRANGE/IRONIC: Something bizarre, absurd, or deeply ironic. Weird twists of fate, unintended consequences, things that sound made up but aren't.
+- SLOT 3 — SHOCKING STATISTIC: An event where the scale or number is the gut punch. Pick the fact with the most jaw-dropping figure.
+- SLOT 4 — DECLASSIFIED (most obscure): The event almost no one knows about. Must be the least well-known on the list. Prefix title with "DECLASSIFIED:"
 
 WRITING RULES:
 - Voice: cold, sparse, factual. Like a declassified document.
 - Each body: max 2 sentences, under 35 words
-- redact field: a specific number, name, or detail from the event to "hide" behind a redaction bar
+- Let the category drive the angle — slot 2 can have a dry, ironic edge. Slot 3 should lead with the number.
+- redact field: the single most surprising detail, number, or name from the event
+- Do NOT invent any facts. Only use what is provided below.
+- Do NOT change dates, names, or numbers from the source material.
 - Never moralize. Never editorialize.
 
 SOURCE EVENTS (verified, all happened on {date}):
@@ -111,6 +113,7 @@ Return ONLY valid JSON, no markdown, no preamble:
   "facts": [
     {{
       "id": 1,
+      "slot": "DARK",
       "event_date": "{date}, YEAR",
       "title": "Short punchy title",
       "body": "One or two sentences max.",
@@ -118,6 +121,7 @@ Return ONLY valid JSON, no markdown, no preamble:
     }},
     {{
       "id": 2,
+      "slot": "STRANGE",
       "event_date": "{date}, YEAR",
       "title": "Short punchy title",
       "body": "One or two sentences max.",
@@ -125,6 +129,7 @@ Return ONLY valid JSON, no markdown, no preamble:
     }},
     {{
       "id": 3,
+      "slot": "STAT",
       "event_date": "{date}, YEAR",
       "title": "Short punchy title",
       "body": "One or two sentences max.",
@@ -132,6 +137,7 @@ Return ONLY valid JSON, no markdown, no preamble:
     }},
     {{
       "id": 4,
+      "slot": "DECLASSIFIED",
       "event_date": "{date}, YEAR",
       "title": "DECLASSIFIED: Short punchy title",
       "body": "One or two sentences max.",
