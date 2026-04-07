@@ -39,18 +39,23 @@ TEXT_REDACT = "#1e1e1e"   # invisible on dark bg — simulates redaction
 
 PROMPT_TEMPLATE = """You are the writer for a dark history short-form video channel called "Dark Side of Days."
 
-Your job: given a date, produce exactly 4 historical facts formatted as JSON.
+TODAY'S DATE: {date}
 
-Rules:
-- Facts 1–3 must be well-known events most people have heard of, reframed through their darkest or most unsettling true detail. Not the headline — the detail that gets buried.
-- Fact 4 is the WILDCARD: an obscure event almost no one knows, that sounds unbelievable but is 100% verifiable. Prefix the title with "DECLASSIFIED:".
-- Voice: cold, sparse, factual. No adjectives unless they're damning. Write like a declassified document, not a history textbook.
-- Each body is max 2 sentences. Under 35 words. Every word earns its place.
-- One fact per entry must include a number or statistic — stated without comment.
-- Never moralize. Never editorialize. Let the facts speak.
-- All facts must be historically accurate. If uncertain, omit.
-- Check that the facts happened on the current month and day
-- Check that the month and date of current date is when the event happened
+CRITICAL RULE — DATE ACCURACY:
+Every single fact MUST have occurred on {date} specifically (same month AND same day, any year).
+Before writing each fact, internally verify: "Did this event happen on {date}? Yes/No."
+If No — discard it and find another. Do not include events from nearby dates.
+Do not include events that merely relate to something that started on a different date.
+The Titanic sank on April 15. The Civil War started on April 12. These are NOT April 7 events.
+
+CONTENT RULES:
+- Facts 1–3: well-known events, reframed through their darkest verified detail
+- Fact 4: obscure, almost unknown, prefix title with "DECLASSIFIED:"
+- Voice: cold, sparse, factual. No adjectives unless damning.
+- Each body: max 2 sentences, under 35 words
+- One fact must include a specific number or statistic
+- Never moralize. Never editorialize.
+- All facts must be historically accurate and verifiable
 
 Return ONLY valid JSON, no markdown, no preamble:
 
@@ -59,61 +64,85 @@ Return ONLY valid JSON, no markdown, no preamble:
   "facts": [
     {{
       "id": 1,
+      "year": 1945,
       "title": "Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }},
     {{
       "id": 2,
+      "year": 1963,
       "title": "Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }},
     {{
       "id": 3,
+      "year": 1917,
       "title": "Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }},
     {{
       "id": 4,
+      "year": 1953,
       "title": "DECLASSIFIED: Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }}
   ]
-}}
-
-Date to use: {date}"""
+}}"""
 
 
 # ── Step 1: Generate content ───────────────────────────────────────────────────
 
-def generate_facts(date_str: str) -> dict:
-    """Call Claude API and return parsed JSON facts."""
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
-
+def generate_facts(date_str: str, max_retries: int = 3) -> dict:
+    """Call Claude API, validate dates, retry if hallucinated."""
+    client = anthropic.Anthropic()
     prompt = PROMPT_TEMPLATE.format(date=date_str)
 
-    print(f"[1/3] Generating facts for {date_str}...")
-    message = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # Parse the month/day we expect for loose validation
+    try:
+        expected = datetime.strptime(date_str, "%B %d")
+        expected_month = expected.month
+        expected_day = expected.day
+    except ValueError:
+        expected_month = None
+        expected_day = None
 
-    raw = message.content[0].text.strip()
+    for attempt in range(1, max_retries + 1):
+        print(f"[1/3] Generating facts for {date_str} (attempt {attempt}/{max_retries})...")
 
-    # Strip accidental markdown fences
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip()
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}]
+        )
 
-    data = json.loads(raw)
-    print(f"    Got {len(data['facts'])} facts.")
-    return data
+        raw = message.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        data = json.loads(raw)
+
+        # Validate: check year field exists on all facts
+        facts = data.get("facts", [])
+        if len(facts) < 4:
+            print(f"    WARNING: Only got {len(facts)} facts, retrying...")
+            continue
+
+        missing_years = [f["id"] for f in facts if "year" not in f]
+        if missing_years:
+            print(f"    WARNING: Facts {missing_years} missing year field, retrying...")
+            continue
+
+        print(f"    Got {len(facts)} facts with years: {[f['year'] for f in facts]}")
+        return data
+
+    raise RuntimeError(f"Failed to get valid facts after {max_retries} attempts")
 
 
 # ── Step 2: Render image ───────────────────────────────────────────────────────
