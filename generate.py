@@ -4,7 +4,7 @@ Generates history facts via Claude API, renders to image, ready to post.
 
 Usage:
     python generate.py                  # uses today's date
-    python generate.py --date "April 6" # specific date
+    python generate.py --date "April 7" # specific date
     python generate.py --preview        # saves image locally, skips posting
 """
 
@@ -23,10 +23,8 @@ import os
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Card dimensions (9:16 portrait — ideal for Shorts/Reels)
 W, H = 1080, 1920
 
-# Colors
 BG          = "#0e0e0e"
 SURFACE     = "#161616"
 BORDER      = "#222222"
@@ -35,7 +33,7 @@ RED_DIM     = "#3d0d0d"
 TEXT_PRI    = "#e0dcd2"
 TEXT_SEC    = "#888888"
 TEXT_DIM    = "#444444"
-TEXT_REDACT = "#1e1e1e"   # invisible on dark bg — simulates redaction
+TEXT_REDACT = "#1e1e1e"
 
 PROMPT_TEMPLATE = """You are the writer for a dark history short-form video channel called "Dark Side of Days."
 
@@ -43,19 +41,20 @@ TODAY'S DATE: {date}
 
 CRITICAL RULE — DATE ACCURACY:
 Every single fact MUST have occurred on {date} specifically (same month AND same day, any year).
-Before writing each fact, internally verify: "Did this event happen on {date}? Yes/No."
-If No — discard it and find another. Do not include events from nearby dates.
-Do not include events that merely relate to something that started on a different date.
-The Titanic sank on April 15. The Civil War started on April 12. These are NOT April 7 events.
+Before writing each fact, verify: "Did this event happen on {date}? Yes/No." If No — discard it.
+Do not include events from nearby dates. Do not include events that merely relate to something that started on a different date.
+
+SOURCING:
+Draw only from well-documented historical events verifiable in encyclopedias, government archives, or major historical records.
+If you are not certain an event occurred on this exact date, omit it.
 
 CONTENT RULES:
-- Facts 1–3: well-known events, reframed through their darkest verified detail
-- Fact 4: obscure, almost unknown, prefix title with "DECLASSIFIED:"
+- Facts 1–3: well-known events reframed through their darkest verified detail
+- Fact 4: obscure, almost unknown — prefix title with "DECLASSIFIED:"
 - Voice: cold, sparse, factual. No adjectives unless damning.
 - Each body: max 2 sentences, under 35 words
 - One fact must include a specific number or statistic
 - Never moralize. Never editorialize.
-- All facts must be historically accurate and verifiable
 
 Return ONLY valid JSON, no markdown, no preamble:
 
@@ -64,28 +63,28 @@ Return ONLY valid JSON, no markdown, no preamble:
   "facts": [
     {{
       "id": 1,
-      "year": 1945,
+      "event_date": "April 7, 1945",
       "title": "Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }},
     {{
       "id": 2,
-      "year": 1963,
+      "event_date": "April 7, 1994",
       "title": "Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }},
     {{
       "id": 3,
-      "year": 1917,
+      "event_date": "April 7, 1917",
       "title": "Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
     }},
     {{
       "id": 4,
-      "year": 1953,
+      "event_date": "April 7, 1953",
       "title": "DECLASSIFIED: Short punchy title",
       "body": "Setup sentence. The detail they never teach you.",
       "redact": "The specific stat or detail to hide behind redaction."
@@ -94,21 +93,35 @@ Return ONLY valid JSON, no markdown, no preamble:
 }}"""
 
 
-# ── Step 1: Generate content ───────────────────────────────────────────────────
+# ── Step 1: Generate + Validate ───────────────────────────────────────────────
+
+def validate_facts(facts: list, expected_month: int, expected_day: int) -> list:
+    """Remove any fact whose event_date doesn't match the expected month/day."""
+    valid = []
+    for f in facts:
+        event_date_str = f.get("event_date", "")
+        try:
+            # Try parsing "April 7, 1945" style
+            parsed = datetime.strptime(event_date_str, "%B %d, %Y")
+            if parsed.month == expected_month and parsed.day == expected_day:
+                valid.append(f)
+            else:
+                print(f"    REJECTED fact {f['id']}: '{event_date_str}' — wrong date (got {parsed.month}/{parsed.day}, expected {expected_month}/{expected_day})")
+        except ValueError:
+            print(f"    REJECTED fact {f['id']}: unparseable date '{event_date_str}'")
+    return valid
+
 
 def generate_facts(date_str: str, max_retries: int = 3) -> dict:
-    """Call Claude API, validate dates, retry if hallucinated."""
+    """Call Claude API, validate dates, retry until 4 valid facts obtained."""
     client = anthropic.Anthropic()
     prompt = PROMPT_TEMPLATE.format(date=date_str)
 
-    # Parse the month/day we expect for loose validation
-    try:
-        expected = datetime.strptime(date_str, "%B %d")
-        expected_month = expected.month
-        expected_day = expected.day
-    except ValueError:
-        expected_month = None
-        expected_day = None
+    expected = datetime.strptime(date_str, "%B %d")
+    expected_month = expected.month
+    expected_day = expected.day
+
+    all_valid_facts = []
 
     for attempt in range(1, max_retries + 1):
         print(f"[1/3] Generating facts for {date_str} (attempt {attempt}/{max_retries})...")
@@ -127,22 +140,38 @@ def generate_facts(date_str: str, max_retries: int = 3) -> dict:
         raw = raw.strip()
 
         data = json.loads(raw)
-
-        # Validate: check year field exists on all facts
         facts = data.get("facts", [])
-        if len(facts) < 4:
-            print(f"    WARNING: Only got {len(facts)} facts, retrying...")
-            continue
 
-        missing_years = [f["id"] for f in facts if "year" not in f]
-        if missing_years:
-            print(f"    WARNING: Facts {missing_years} missing year field, retrying...")
-            continue
+        valid = validate_facts(facts, expected_month, expected_day)
+        print(f"    {len(valid)}/{len(facts)} facts passed date validation.")
 
-        print(f"    Got {len(facts)} facts with years: {[f['year'] for f in facts]}")
-        return data
+        # Merge valid facts, avoid duplicates by title
+        existing_titles = {f["title"] for f in all_valid_facts}
+        for f in valid:
+            if f["title"] not in existing_titles:
+                all_valid_facts.append(f)
+                existing_titles.add(f["title"])
 
-    raise RuntimeError(f"Failed to get valid facts after {max_retries} attempts")
+        if len(all_valid_facts) >= 4:
+            break
+
+        if attempt < max_retries:
+            print(f"    Only {len(all_valid_facts)} valid facts so far, retrying...")
+
+    if len(all_valid_facts) < 4:
+        raise RuntimeError(
+            f"Only found {len(all_valid_facts)} verified facts for {date_str} after {max_retries} attempts. "
+            f"Not enough to render. Try running again."
+        )
+
+    # Re-number and take first 4
+    final_facts = all_valid_facts[:4]
+    for i, f in enumerate(final_facts, 1):
+        f["id"] = i
+
+    data["facts"] = final_facts
+    print(f"    Final: {len(final_facts)} verified facts.")
+    return data
 
 
 # ── Step 2: Render image ───────────────────────────────────────────────────────
@@ -153,7 +182,6 @@ def hex_to_rgb(h: str) -> tuple:
 
 
 def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Try to load a system monospace font, fall back to default."""
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf" if bold else
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -169,8 +197,6 @@ def load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 def draw_wrapped_text(draw, text, x, y, max_width, font, fill, line_height=None):
-    """Draw text with word wrapping. Returns y position after last line."""
-    # Estimate chars per line from font size
     try:
         char_w = font.getlength("M")
     except AttributeError:
@@ -188,79 +214,117 @@ def draw_rect(draw, x1, y1, x2, y2, fill=None, outline=None, width=1, radius=8):
     draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=fill, outline=outline, width=width)
 
 
+def measure_block_height(fact, fonts, inner_w, block_pad_x, block_pad_y, border_w):
+    """Calculate exact height a fact block will need."""
+    f_tiny, f_body, f_title = fonts
+    try:
+        char_w_title = f_title.getlength("M")
+        char_w_body  = f_body.getlength("M")
+    except AttributeError:
+        char_w_title = f_title.size * 0.6
+        char_w_body  = f_body.size * 0.6
+
+    text_w = inner_w - border_w - block_pad_x * 2
+
+    title_lines = textwrap.wrap(fact["title"].upper(), width=max(1, int(text_w / char_w_title)))
+    body_lines  = textwrap.wrap(fact["body"],          width=max(1, int(text_w / char_w_body)))
+
+    h  = block_pad_y          # top padding
+    h += 40                    # record label
+    h += len(title_lines) * 52 # title lines
+    h += 12                    # gap
+    h += len(body_lines) * 46  # body lines
+    h += 50                    # redacted bar
+    h += block_pad_y           # bottom padding
+    return h
+
+
 def render_card(data: dict, output_path: Path):
-    """Render the classified document card as a 1080x1920 PNG."""
     print("[2/3] Rendering image...")
 
     img = Image.new("RGB", (W, H), hex_to_rgb(BG))
     draw = ImageDraw.Draw(img)
 
-    pad = 72   # horizontal padding
+    pad = 56
     inner_w = W - pad * 2
 
-    # ── Fonts
-    f_tiny   = load_font(28)
-    f_small  = load_font(32)
-    f_body   = load_font(36)
-    f_title  = load_font(44, bold=True)
-    f_date   = load_font(80, bold=True)
-    f_label  = load_font(24)
+    f_tiny   = load_font(26)
+    f_small  = load_font(30)
+    f_body   = load_font(32)
+    f_title  = load_font(38, bold=True)
+    f_date   = load_font(72, bold=True)
+    f_label  = load_font(22)
+    f_event  = load_font(24)
 
-    # ── Header bar ────────────────────────────────────────────────────────────
-    draw_rect(draw, pad, 80, W - pad, 200, fill=hex_to_rgb(SURFACE), outline=hex_to_rgb(BORDER))
-
-    draw.text((pad + 28, 108), "TOP SECRET", font=f_small, fill=hex_to_rgb(RED))
-    draw.text((pad + 28, 148), "HISTORICAL RECORD", font=f_tiny, fill=hex_to_rgb(TEXT_DIM))
+    # ── Header ────────────────────────────────────────────────────────────────
+    draw_rect(draw, pad, 70, W - pad, 185, fill=hex_to_rgb(SURFACE), outline=hex_to_rgb(BORDER))
+    draw.text((pad + 24, 95),  "TOP SECRET",        font=f_small, fill=hex_to_rgb(RED))
+    draw.text((pad + 24, 133), "HISTORICAL RECORD", font=f_tiny,  fill=hex_to_rgb(TEXT_DIM))
 
     doc_lines = [f"FILE: DSH-{data['date'].replace(' ', '').upper()[:6]}",
                  "EYES ONLY", "PAGE: 01 OF 01"]
-    dy = 100
+    dy = 88
     for line in doc_lines:
         bbox = draw.textbbox((0, 0), line, font=f_tiny)
         tw = bbox[2] - bbox[0]
-        draw.text((W - pad - 28 - tw, dy), line, font=f_tiny, fill=hex_to_rgb(TEXT_DIM))
-        dy += 36
+        draw.text((W - pad - 24 - tw, dy), line, font=f_tiny, fill=hex_to_rgb(TEXT_DIM))
+        dy += 34
 
     # ── Date ──────────────────────────────────────────────────────────────────
-    draw.text((W // 2, 260), "INCIDENT DATE", font=f_label, fill=hex_to_rgb(TEXT_DIM),
-              anchor="mm")
-    draw.text((W // 2, 340), data["date"].upper(), font=f_date, fill=hex_to_rgb(TEXT_PRI),
-              anchor="mm")
-
-    # Divider
-    draw.line([(pad, 400), (W - pad, 400)], fill=hex_to_rgb(BORDER), width=2)
+    draw.text((W // 2, 235), "INCIDENT DATE", font=f_label, fill=hex_to_rgb(TEXT_DIM), anchor="mm")
+    draw.text((W // 2, 308), data["date"].upper(), font=f_date, fill=hex_to_rgb(TEXT_PRI), anchor="mm")
+    draw.line([(pad, 360), (W - pad, 360)], fill=hex_to_rgb(BORDER), width=2)
 
     # ── Facts ─────────────────────────────────────────────────────────────────
-    y = 430
-    block_pad_x = 28
-    block_pad_y = 28
-    border_w = 6
+    block_pad_x = 24
+    block_pad_y = 22
+    border_w    = 6
+    gap         = 18
+    fonts       = (f_tiny, f_body, f_title)
 
+    # Pre-measure all blocks to check they fit
+    total_facts_h = sum(
+        measure_block_height(f, fonts, inner_w, block_pad_x, block_pad_y, border_w) + gap
+        for f in data["facts"]
+    )
+    available = H - 360 - 140  # header area + footer area
+    if total_facts_h > available:
+        # Scale fonts down if needed
+        scale = available / total_facts_h
+        new_body  = max(24, int(32 * scale))
+        new_title = max(28, int(38 * scale))
+        f_body  = load_font(new_body)
+        f_title = load_font(new_title, bold=True)
+        fonts   = (f_tiny, f_body, f_title)
+        print(f"    Auto-scaled fonts: body={new_body} title={new_title}")
+
+    y = 378
     for fact in data["facts"]:
         is_wild = fact["id"] == 4
-        accent = RED if is_wild else BORDER
+        accent  = RED if is_wild else BORDER
         surface = RED_DIM if is_wild else SURFACE
 
-        # Estimate block height
-        body_preview = fact["body"] + " " + fact["redact"]
-        approx_lines = max(3, len(textwrap.wrap(body_preview, width=38)))
-        block_h = block_pad_y * 2 + 40 + 12 + (approx_lines * 44) + 16
+        block_h = measure_block_height(fact, fonts, inner_w, block_pad_x, block_pad_y, border_w)
 
-        # Block background
         draw_rect(draw, pad, y, W - pad, y + block_h,
                   fill=hex_to_rgb(surface), outline=hex_to_rgb(accent), width=2, radius=10)
-
-        # Left accent bar
         draw_rect(draw, pad, y, pad + border_w, y + block_h,
                   fill=hex_to_rgb(accent), radius=10)
 
         cx = pad + border_w + block_pad_x
         cy = y + block_pad_y
 
-        # Record label
+        # Record label + event date on same line
         label = f"RECORD 00{fact['id']} {'— DECLASSIFIED' if is_wild else ''}"
         draw.text((cx, cy), label, font=f_tiny,
                   fill=hex_to_rgb(RED if is_wild else TEXT_DIM))
+
+        event_date = fact.get("event_date", "")
+        if event_date:
+            bbox = draw.textbbox((0, 0), event_date, font=f_event)
+            ew = bbox[2] - bbox[0]
+            draw.text((W - pad - border_w - block_pad_x - ew, cy),
+                      event_date, font=f_event, fill=hex_to_rgb(RED if is_wild else TEXT_SEC))
         cy += 40
 
         # Title
@@ -269,63 +333,46 @@ def render_card(data: dict, output_path: Path):
                                f_title, hex_to_rgb(TEXT_PRI), line_height=52)
         cy += 12
 
-        # Body text (non-redacted part)
+        # Body
         cy = draw_wrapped_text(draw, fact["body"], cx, cy,
                                inner_w - border_w - block_pad_x * 2,
                                f_body, hex_to_rgb(TEXT_SEC), line_height=46)
 
-        # Redacted block — dark rect simulating censorship bar
+        # Redacted bar
         redact_text = fact["redact"]
         try:
             rw = int(f_body.getlength(redact_text[:30]))
         except AttributeError:
-            rw = len(redact_text[:30]) * 22
+            rw = len(redact_text[:30]) * 20
         rw = min(rw + 20, inner_w - border_w - block_pad_x * 2)
-
-        draw_rect(draw, cx, cy + 4, cx + rw, cy + 46,
+        draw_rect(draw, cx, cy + 4, cx + rw, cy + 42,
                   fill=hex_to_rgb("#1a1a1a"), radius=4)
         draw.text((cx + 8, cy + 10), "█ " + redact_text[:28] + "...",
                   font=f_body, fill=hex_to_rgb(TEXT_REDACT))
 
-        cy += 50
-        y = y + block_h + 24
+        y += block_h + gap
 
     # ── Footer ────────────────────────────────────────────────────────────────
-    draw.line([(pad, H - 160), (W - pad, H - 160)], fill=hex_to_rgb(BORDER), width=1)
-    draw.text((pad, H - 130), "@darkside.of.days", font=f_small, fill=hex_to_rgb(TEXT_DIM))
-
+    draw.line([(pad, H - 120), (W - pad, H - 120)], fill=hex_to_rgb(BORDER), width=1)
+    draw.text((pad, H - 95), "@darkside.of.days", font=f_small, fill=hex_to_rgb(TEXT_DIM))
     cta = "FOLLOW FOR DAILY FILES"
     bbox = draw.textbbox((0, 0), cta, font=f_small)
     tw = bbox[2] - bbox[0]
-    draw.text((W - pad - tw, H - 130), cta, font=f_small, fill=hex_to_rgb(RED))
+    draw.text((W - pad - tw, H - 95), cta, font=f_small, fill=hex_to_rgb(RED))
 
     img.save(output_path, "PNG", quality=95)
     print(f"    Saved → {output_path}")
 
 
-# ── Step 3: Post (stubs — wire up your platform APIs here) ────────────────────
+# ── Step 3: Post stubs ────────────────────────────────────────────────────────
 
 def post_to_youtube(image_path: Path, caption: str):
-    """
-    Upload as a YouTube Community post (image + text).
-    Requires: google-auth, google-api-python-client
-    Docs: https://developers.google.com/youtube/v3/docs/communityPosts
-    Replace this stub with real OAuth + API call.
-    """
-    print(f"[POST] YouTube stub — would post {image_path} with caption:\n{caption}")
-
+    print(f"[POST] YouTube stub — would post {image_path}")
 
 def post_to_instagram(image_path: Path, caption: str):
-    """
-    Post via Instagram Graph API (requires Facebook Business account).
-    Docs: https://developers.facebook.com/docs/instagram-api/guides/content-publishing
-    Replace this stub with real token + API call.
-    """
-    print(f"[POST] Instagram stub — would post {image_path} with caption:\n{caption}")
-
+    print(f"[POST] Instagram stub — would post {image_path}")
 
 def build_caption(data: dict) -> str:
-    """Build the text caption for the post."""
     lines = [f"What really happened on {data['date']}? 🔎\n"]
     for f in data["facts"]:
         lines.append(f"▪ {f['title']}")
@@ -338,23 +385,23 @@ def build_caption(data: dict) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", type=str, default=None,
-                        help='Date string e.g. "April 6". Defaults to today.')
-    parser.add_argument("--preview", action="store_true",
-                        help="Render only, skip posting.")
+    parser.add_argument("--date", type=str, default=None)
+    parser.add_argument("--preview", action="store_true")
     args = parser.parse_args()
 
-    date_str = args.date or datetime.now().strftime("%B %-d")
+    # Cross-platform date formatting (no %-d)
+    if args.date:
+        date_str = args.date
+    else:
+        now = datetime.now()
+        date_str = now.strftime("%B ") + str(now.day)
 
-    # 1. Generate
     data = generate_facts(date_str)
 
-    # 2. Render
     slug = date_str.replace(" ", "_").lower()
     output_path = OUTPUT_DIR / f"dark_side_{slug}.png"
     render_card(data, output_path)
 
-    # 3. Save raw JSON alongside image (useful for logging/debugging)
     json_path = OUTPUT_DIR / f"dark_side_{slug}.json"
     json_path.write_text(json.dumps(data, indent=2))
 
@@ -362,13 +409,11 @@ def main():
         print(f"\n[PREVIEW MODE] Skipping post. Image at: {output_path}")
         return
 
-    # 4. Post
     print("[3/3] Posting...")
     caption = build_caption(data)
     post_to_youtube(output_path, caption)
     post_to_instagram(output_path, caption)
     print("Done.")
-
 
 if __name__ == "__main__":
     main()
