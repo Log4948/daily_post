@@ -3,7 +3,7 @@ name: Daily Dark Side of Days post
 on:
   schedule:
     - cron: "0 13 * * *"   # 8:00 AM CT every day
-  workflow_dispatch:        # lets you trigger it manually from GitHub
+  workflow_dispatch:
 
 jobs:
   post:
@@ -22,6 +22,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generate and post
-        env:                     
+        env:
           ANTHROPIC_API_KEY: ${{ secrets.LOGANDAILYSECRET }}
         run: python generate.py --preview
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-post-image
+          path: output/
