@@ -23,5 +23,5 @@ jobs:
 
       - name: Generate and post
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.YOUR_SECRET_NAME_HERE }}
+          ANTHROPIC_API_KEY: ${{ LOGANDAILYSECRET }}
         run: python generate.py --preview
