@@ -1,0 +1,27 @@
+name: Daily Dark Side of Days post
+
+on:
+  schedule:
+    - cron: "0 13 * * *"   # 8:00 AM CT every day
+  workflow_dispatch:        # lets you trigger it manually from GitHub
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate and post
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.YOUR_SECRET_NAME_HERE }}
+        run: python generate.py --preview
